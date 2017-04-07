@@ -2,6 +2,7 @@ package com.tspowell.ttd.cache.associative;
 
 import com.tspowell.ttd.cache.UnsettableEntry;
 import com.tspowell.ttd.cache.invalidation.CacheInvalidator;
+import com.tspowell.ttd.cache.invalidation.InvalidationException;
 import com.tspowell.ttd.cache.invalidation.LRUInvalidator;
 
 import javax.cache.Cache;
@@ -128,6 +129,10 @@ public class SetAssociativeCache<K, V>
         return this.buckets[Math.abs(hashCode) % this.numberOfSets];
     }
 
+    private int indexForBucket(int hashCode) {
+        return Math.abs(hashCode) % this.entriesPerSet;
+    }
+
     /**
      * Compare a set entry with a key for equality.
      * @param entry the proposed entry
@@ -149,13 +154,20 @@ public class SetAssociativeCache<K, V>
      */
     private Entry getEntry(Object key, int hash) {
         final Bucket bucket = bucketForHash(hash);
+        final int startIndex = indexForBucket(hash);
+        int index = startIndex;
 
-        for (final Entry entry : bucket.entries) {
+        do {
+            final Entry entry = bucket.entries[index];
             if (isMatch(entry, hash, key)) {
                 bucket.touch(entry);
                 return entry;
             }
-        }
+
+            if (++index == this.entriesPerSet) {
+                index = 0;
+            }
+        } while (index != startIndex);
 
         return null;
     }
@@ -177,30 +189,43 @@ public class SetAssociativeCache<K, V>
         int hash = key.hashCode();
         final Bucket bucket = bucketForHash(hash);
 
-        final Entry existing = getEntry(key, hash);
-        if (existing != null) {
-            final V oldValue = existing.getValue();
-            existing.setValue(value);
+        final int startIndex = indexForBucket(hash);
+        int index = startIndex;
+        SetAssociativeCache.Entry lastUnset = null;
 
-            return oldValue;
+        if (bucket.size == this.entriesPerSet) {
+            invalidateAndCount(bucket);
         }
 
         do {
-            for (final Entry entry : bucket.entries) {
-                if (!entry.isSet()) {
-                    entry.setKey(key);
-                    entry.setValue(value);
-                    entry.setHash(hash);
+            final Entry entry = bucket.entries[index];
+            if (isMatch(entry, hash, key)) {
+                bucket.touch(entry);
+                final V oldValue = entry.getValue();
+                entry.setValue(value);
+                bucket.touch(entry);
 
-                    bucket.touch(entry);
-                    this.size++;
+                return oldValue;
 
-                    return value;
-                }
+            } else if (!entry.isSet()) {
+                lastUnset = entry;
             }
-        } while (invalidateAndCount(bucket));
 
-        throw new RuntimeException("Could not invalidate according to the cache invalidation strategy!");
+            if (++index == this.entriesPerSet) {
+                index = 0;
+            }
+        } while (index != startIndex);
+
+        lastUnset.setKey(key);
+        lastUnset.setValue(value);
+        lastUnset.setHash(hash);
+
+        bucket.touch(lastUnset);
+
+        bucket.size++;
+        this.size++;
+
+        return value;
     }
 
     /**
@@ -208,16 +233,15 @@ public class SetAssociativeCache<K, V>
      *
      * @param bucket the bucket to remove one or more cache items from, according to the algorithm for this
      *               particular cache instance.
-     * @return true if the invalidator removed an item, false otherwise.
      */
-    private boolean invalidateAndCount(final Bucket bucket) {
+    private void invalidateAndCount(final Bucket bucket) {
         boolean removed = bucket.invalidate();
 
         if (removed) {
             this.size--;
+        } else {
+            throw new InvalidationException("Could not invalidate the bucket");
         }
-
-        return removed;
     }
 
     /**
@@ -357,6 +381,7 @@ public class SetAssociativeCache<K, V>
     private class Bucket {
         private final Entry[] entries;
         private final CacheInvalidator<K, V> invalidator;
+        private int size = 0;
 
         @SuppressWarnings("unchecked")
         protected Bucket() {
@@ -370,7 +395,12 @@ public class SetAssociativeCache<K, V>
         }
 
         boolean invalidate() {
-            return invalidator.invalidate();
+            boolean removed = invalidator.invalidate();
+            if (removed) {
+                this.size--;
+            }
+
+            return removed;
         }
 
         void touch(final Entry entry) {
@@ -380,6 +410,11 @@ public class SetAssociativeCache<K, V>
         void remove(final Entry entry) {
             this.invalidator.remove(entry);
             entry.unset();
+            this.size--;
+        }
+
+        int size() {
+            return this.size;
         }
     }
 
