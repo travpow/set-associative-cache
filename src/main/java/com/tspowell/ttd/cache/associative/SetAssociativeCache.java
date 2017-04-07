@@ -12,13 +12,13 @@ import java.util.function.Supplier;
 /**
  * An N-way set-associative cache.
  *
- * A fixed-size bucket array points to bucket sets with a head pointer, tail pointer, and array of
- * pointers to cache entries.
- * - The head designates the least recently used object. The tail is the most recently used.
+ * A fixed-size bucket array points to bucket sets with a member cache invalidator.
+ * - For an LRU invalidator, the head designates the least recently used object. The tail is the most recently used.
  * - Only get(), put() and remove() affect the cache invalidation list.
  *
  * Because we can't take advantage of contiguously allocated blocks of cache entries, we are pre-allocating
- * the cache entries and updating the pointers to the key/value/hash when setting a value.
+ * the cache entries and updating the pointers to the key/value/hash when setting a value. The entries are
+ * maintained for the lifetime of the cache, and iterators must allocate new entries.
  *
  * TODO:
  * Normally, I would implement the JCache API (and I have included it as a dependency
