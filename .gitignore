@@ -1,0 +1,4 @@
+
+#Ignore maven output
+target/**
+.idea/**
